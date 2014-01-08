@@ -22,6 +22,7 @@
 G_BEGIN_DECLS
 
 #include <libsoup/soup.h>
+#include "gstsouputils.h"
 
 #define GST_TYPE_SOUP_HTTP_SRC \
   (gst_soup_http_src_get_type())
@@ -83,6 +84,7 @@ struct _GstSoupHTTPSrc {
                                 * decide if an out of range request should be
                                 * handled as an error or EOS when the content
                                 * size is unknown */
+  SoupLoggerLogLevel log_level;/* Soup HTTP session logger level */
 
   /* Shoutcast/icecast metadata extraction handling. */
   gboolean iradio_mode;
