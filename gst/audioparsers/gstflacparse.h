@@ -56,6 +56,7 @@ struct _GstFlacParse {
 
   /* Properties */
   gboolean check_frame_checksums;
+  gboolean skip_padding_metadata;
 
   GstFlacParseState state;
 

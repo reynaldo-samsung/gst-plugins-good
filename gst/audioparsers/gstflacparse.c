@@ -100,6 +100,8 @@ static const guint8 crc8_table[256] = {
   0xE6, 0xE1, 0xE8, 0xEF, 0xFA, 0xFD, 0xF4, 0xF3
 };
 
+static GstFlowReturn gst_flac_parse_handle_headers (GstFlacParse * flacparse);
+
 static guint8
 gst_flac_calculate_crc8 (const guint8 * data, guint length)
 {
@@ -165,10 +167,12 @@ gst_flac_calculate_crc16 (const guint8 * data, guint length)
 enum
 {
   PROP_0,
-  PROP_CHECK_FRAME_CHECKSUMS
+  PROP_CHECK_FRAME_CHECKSUMS,
+  PROP_SKIP_PADDING_METADATA
 };
 
 #define DEFAULT_CHECK_FRAME_CHECKSUMS FALSE
+#define DEFAULT_SKIP_PADDING_METADATA TRUE
 
 static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
@@ -230,6 +234,23 @@ gst_flac_parse_class_init (GstFlacParseClass * klass)
           "Check the overall checksums of every frame",
           DEFAULT_CHECK_FRAME_CHECKSUMS,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+  /**
+   * GstFlacParse:skip-padding-metadata
+   *
+   * Toggle skipping of padding metadata blocks from a FLAC stream.
+   *
+   * According to the available documentation, padding metadata blocks
+   * have no inherent meaning. They are blank placeholders left behind
+   * by encoders wishing to facilitate in-place addition of further
+   * metadata. Skipping them should have no negative effect.
+   *
+   * Since: 1.8
+   */
+  g_object_class_install_property (gobject_class, PROP_SKIP_PADDING_METADATA,
+      g_param_spec_boolean ("skip-padding-metadata", "Skip Padding Metadata",
+          "Skip padding metadata blocks",
+          DEFAULT_SKIP_PADDING_METADATA,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   baseparse_class->start = GST_DEBUG_FUNCPTR (gst_flac_parse_start);
   baseparse_class->stop = GST_DEBUG_FUNCPTR (gst_flac_parse_stop);
@@ -257,6 +278,7 @@ static void
 gst_flac_parse_init (GstFlacParse * flacparse)
 {
   flacparse->check_frame_checksums = DEFAULT_CHECK_FRAME_CHECKSUMS;
+  flacparse->skip_padding_metadata = DEFAULT_SKIP_PADDING_METADATA;
   GST_PAD_SET_ACCEPT_INTERSECT (GST_BASE_PARSE_SINK_PAD (flacparse));
   GST_PAD_SET_ACCEPT_TEMPLATE (GST_BASE_PARSE_SINK_PAD (flacparse));
 }
@@ -270,6 +292,9 @@ gst_flac_parse_set_property (GObject * object, guint prop_id,
   switch (prop_id) {
     case PROP_CHECK_FRAME_CHECKSUMS:
       flacparse->check_frame_checksums = g_value_get_boolean (value);
+      break;
+    case PROP_SKIP_PADDING_METADATA:
+      flacparse->skip_padding_metadata = g_value_get_boolean (value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -286,6 +311,9 @@ gst_flac_parse_get_property (GObject * object, guint prop_id,
   switch (prop_id) {
     case PROP_CHECK_FRAME_CHECKSUMS:
       g_value_set_boolean (value, flacparse->check_frame_checksums);
+      break;
+    case PROP_SKIP_PADDING_METADATA:
+      g_value_set_boolean (value, flacparse->skip_padding_metadata);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -801,6 +829,30 @@ gst_flac_parse_handle_frame (GstBaseParse * parse,
 
     GST_DEBUG_OBJECT (flacparse, "Found metadata block of size %u", size);
     framesize = size;
+
+    /* Identify and (conditionally) skip padding metadata blocks */
+    if (flacparse->skip_padding_metadata && (map.data[0] & 0x7f) == 1) {
+
+      if ((map.data[0] >> 7) == 1) {
+        /* Last metadata block, frame follows */
+        GST_INFO_OBJECT (flacparse, "This is the last metadata block");
+
+        if (gst_flac_parse_handle_headers (flacparse) != GST_FLOW_OK) {
+          GST_ERROR_OBJECT (flacparse, "Failed to handle headers. Giving up");
+          return GST_FLOW_ERROR;
+        }
+
+        /* Minimum size of a frame header */
+        gst_base_parse_set_min_frame_size (GST_BASE_PARSE (flacparse), MAX (9,
+                flacparse->min_framesize));
+        flacparse->state = GST_FLAC_PARSE_STATE_DATA;
+      }
+
+      GST_WARNING_OBJECT (flacparse, "Skipping %u bytes of padding metadata. "
+          "Set skip-padding-metadata to FALSE to preserve", size);
+      *skipsize = framesize;
+      result = FALSE;
+    }
     goto cleanup;
   }
 
